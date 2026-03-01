@@ -382,45 +382,47 @@ async def process_registration_with_ai(user_id: int, user_message: str) -> Dict[
         }
 
 # Функция для создания коллажа из карт
-async def create_collage(card_numbers: List[int], positions: List[str]) -> BytesIO:
-    """Создает коллаж из карт Таро"""
-    cols = min(3, len(card_numbers))
-    rows = (len(card_numbers) + cols - 1) // cols
+async def create_collage(card_numbers: List[int]) -> BytesIO:
+    """Создает коллаж из карт Таро в один ряд с градиентным фоном"""
+    # Все карты в один ряд
+    cols = len(card_numbers)
+    rows = 1
     
     card_width, card_height = 300, 520
     padding = 20
-    title_height = 40
-    bg_color = (46, 33, 23)
     
+    # Создаем градиентный фон
     collage_width = cols * card_width + (cols + 1) * padding
-    collage_height = rows * (card_height + title_height) + (rows + 1) * padding
-    collage = Image.new('RGB', (collage_width, collage_height), bg_color)
+    collage_height = card_height + 2 * padding
+    
+    # Создаем градиент от темно-фиолетового к чуть более светлому
+    base_color = (46, 33, 53)  # Темно-фиолетовый
+    light_color = (76, 53, 83)  # Светло-фиолетовый
+    
+    collage = Image.new('RGB', (collage_width, collage_height), base_color)
     draw = ImageDraw.Draw(collage)
     
+    # Рисуем вертикальный градиент
+    for y in range(collage_height):
+        ratio = y / collage_height
+        r = int(base_color[0] * (1 - ratio) + light_color[0] * ratio)
+        g = int(base_color[1] * (1 - ratio) + light_color[1] * ratio)
+        b = int(base_color[2] * (1 - ratio) + light_color[2] * ratio)
+        draw.line([(0, y), (collage_width, y)], fill=(r, g, b))
+    
+    # Золотистая рамка
     draw.rectangle([(0, 0), (collage_width-1, collage_height-1)], outline=(212, 175, 55), width=5)
     
-    try:
-        font = ImageFont.truetype("arial.ttf", 20)
-    except:
-        font = ImageFont.load_default()
-    
+    # Размещаем карты
     for idx, card_num in enumerate(card_numbers):
-        row = idx // cols
-        col = idx % cols
-        
-        x = padding + col * (card_width + padding)
-        y = padding + row * (card_height + title_height + padding)
+        x = padding + idx * (card_width + padding)
+        y = padding
         
         card_path = f"deck/{card_num}.jpg"
         if os.path.exists(card_path):
             card_img = Image.open(card_path)
             card_img = card_img.resize((card_width, card_height), Image.Resampling.LANCZOS)
             collage.paste(card_img, (x, y))
-            
-            if idx < len(positions):
-                text_x = x + 10
-                text_y = y + card_height + 5
-                draw.text((text_x, text_y), positions[idx], fill=(212, 175, 55), font=font)
     
     img_byte_arr = BytesIO()
     collage.save(img_byte_arr, format='JPEG', quality=95)
@@ -514,8 +516,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
         await state.set_state(RegistrationStates.waiting_for_registration)
         await message.answer(
             "Добро пожаловать! Я помогу вам с вопросами о картах Таро.\n\n"
-            "Для начала скажите, как вас зовут и сколько вам лет?\n"
-            "Например: *Меня зовут Анна, мне 25 лет*",
+            "Для начала скажите, как вас зовут и сколько вам лет?\n",
             parse_mode="Markdown"
         )
 
@@ -677,7 +678,7 @@ async def handle_message(message: types.Message, state: FSMContext):
         save_last_spread(user_id, user_text[:200], card_numbers, positions, spread_name, spread_topic)
         
         # Создаем и отправляем коллаж
-        collage_bytes = await create_collage(card_numbers, positions)
+        collage_bytes = await create_collage(card_numbers)
         await message.answer_photo(
             photo=BufferedInputFile(collage_bytes.getvalue(), filename="spread.jpg"),
             caption=f"🔮 {spread_name}",
