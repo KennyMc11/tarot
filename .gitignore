@@ -22,6 +22,7 @@ events.csv
 TELEGRAM_SETUP.md
 db.sqlite3
 sports_data.db
+tarot_bot.db
 
 # Логи
 *.log

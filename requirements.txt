@@ -1,0 +1,7 @@
+aiogram
+mistralai
+asyncpg
+Pillow
+python-dotenv
+APScheduler
+aiofiles
