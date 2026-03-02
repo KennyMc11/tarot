@@ -114,7 +114,7 @@ async def create_collage(card_numbers: List[int]) -> BytesIO:
     
     # Создаем градиент от темно-фиолетового к чуть более светлому
     base_color = (46, 33, 53)  # Темно-фиолетовый
-    light_color = (76, 53, 83)  # Светло-фиолетовый
+    light_color = (140, 90, 156)  # Светло-фиолетовый
     
     collage = Image.new('RGB', (collage_width, collage_height), base_color)
     draw = ImageDraw.Draw(collage)
