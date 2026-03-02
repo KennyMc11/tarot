@@ -36,34 +36,36 @@ ai = AIAssistant(api_key=MISTRAL_API_KEY, model=MISTRAL_MODEL)
 
 
 def generate_spread_cards(spread_type: str, topic: str = "общий") -> List[int]:
-    """Генерирует случайные уникальные карты для расклада"""
+    """Генерирует случайные уникальные карты для расклада с учетом вероятности перевернутых карт"""
     
     # Определяем количество карт
-    if spread_type == "1":
-        num_cards = 1
-    elif spread_type == "2":
-        num_cards = 2
-    elif spread_type == "3":
-        num_cards = 3
-    elif spread_type == "4":
-        num_cards = 4
-    elif spread_type == "5":
-        num_cards = 5
-    elif spread_type == "6":
-        num_cards = 6
-    elif spread_type == "7":
-        num_cards = 7
-    elif spread_type == "8":
-        num_cards = 8
-    elif spread_type == "9":
-        num_cards = 9
-    elif spread_type == "10":
-        num_cards = 10
-    else:
-        num_cards = 3  # по умолчанию
+    card_counts = {
+        "1": 1, "2": 2, "3": 3, "4": 4, "5": 5,
+        "6": 6, "7": 7, "8": 8, "9": 9, "10": 10
+    }
+    num_cards = card_counts.get(spread_type, 3)
     
-    # Генерируем уникальные случайные карты (0-155)
-    return random.sample(range(156), num_cards)
+    # Получаем все доступные базовые номера карт (0-77)
+    available_bases = list(range(78))
+    selected_cards = []
+    
+    # Перемешиваем доступные базовые номера для случайности
+    random.shuffle(available_bases)
+    
+    # Берем нужное количество базовых карт
+    for i in range(min(num_cards, len(available_bases))):
+        base_card = available_bases[i]
+        
+        # Определяем, будет ли карта перевернутой с вероятностью 33% (чтобы прямые выпадали в 2 раза чаще)
+        # 33% * 78 = ~26 перевернутых карт, 67% * 78 = ~52 прямых карт (соотношение ~2:1)
+        is_reversed = random.random() < 0.33
+        
+        if is_reversed:
+            selected_cards.append(base_card + 78)  # Перевернутая
+        else:
+            selected_cards.append(base_card)  # Прямая
+    
+    return selected_cards
 
 
 # Функция для генерации позиций, если AI их не предоставил
@@ -188,7 +190,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
         db.clear_temp_registration(user_id)
         await state.set_state(RegistrationStates.waiting_for_registration)
         await message.answer(
-            "Добро пожаловать! Я помогу вам с вопросами о картах Таро.\n\n"
+            "Добро пожаловать!\n\nМеня зовут Афина.\nЯ помогу вам с вопросами о картах Таро.\n\n"
             "Для начала скажите, как вас зовут и сколько вам лет?\n",
             parse_mode="Markdown"
         )
@@ -393,7 +395,10 @@ async def handle_message(message: types.Message, state: FSMContext):
         # Удаляем уведомление
         await thinking_message.delete()
         
-        # Отправляем интерпретацию
+        # Отправляем интерпретацию с проверкой длины
+        if len(interpretation) > 4000:
+            # Если сообщение слишком длинное, обрезаем и добавляем предупреждение
+            interpretation = interpretation[:4000] + "...\n\n*Интерпретация сокращена из-за ограничений Telegram*"
         await message.answer(interpretation, parse_mode="Markdown")
         
         # Сохраняем в историю
@@ -403,7 +408,9 @@ async def handle_message(message: types.Message, state: FSMContext):
     else:
         # Обычный текстовый ответ
         answer = response_data.get("message", "Я внимательно изучила ваш вопрос.")
-        await message.answer(answer[:4000])
+        if len(answer) > 4000:
+            answer = answer[:4000] + "...\n\n*Сообщение сокращено из-за ограничений Telegram*"
+        await message.answer(answer, parse_mode="Markdown")
         db.save_message_to_history(user_id, "assistant", answer[:200])
 
 
