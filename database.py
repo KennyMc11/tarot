@@ -81,6 +81,26 @@ class Database:
                     FOREIGN KEY (user_id) REFERENCES users (user_id)
                 )
             ''')
+
+            # Таблица для подписок на карту дня
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS daily_card_subscriptions (
+                    user_id INTEGER PRIMARY KEY,
+                    subscribed_at TIMESTAMP,
+                    last_sent_date DATE,
+                    FOREIGN KEY (user_id) REFERENCES users (user_id)
+                )
+            ''')
+
+            # Таблица для отслеживания предложений подписки
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS subscription_offers (
+                    user_id INTEGER PRIMARY KEY,
+                    last_offer_date TIMESTAMP,
+                    offer_count INTEGER DEFAULT 0,
+                    FOREIGN KEY (user_id) REFERENCES users (user_id)
+                )
+            ''')
             
             conn.commit()
             print("✅ База данных инициализирована")
@@ -303,3 +323,85 @@ class Database:
             return age
         except:
             return 0
+
+    @staticmethod
+    def add_subscription(user_id: int):
+        """Добавляет подписку на карту дня"""
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT OR REPLACE INTO daily_card_subscriptions (user_id, subscribed_at, last_sent_date)
+                VALUES (?, ?, ?)
+            ''', (user_id, datetime.now(), None))
+            conn.commit()
+
+    @staticmethod
+    def remove_subscription(user_id: int):
+        """Удаляет подписку на карту дня"""
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM daily_card_subscriptions WHERE user_id = ?', (user_id,))
+            conn.commit()
+
+    @staticmethod
+    def is_subscribed(user_id: int) -> bool:
+        """Проверяет, подписан ли пользователь"""
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT 1 FROM daily_card_subscriptions WHERE user_id = ?', (user_id,))
+            return cursor.fetchone() is not None
+
+    @staticmethod
+    def get_all_subscribers() -> List[int]:
+        """Получает список всех подписчиков"""
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT user_id FROM daily_card_subscriptions')
+            return [row['user_id'] for row in cursor.fetchall()]
+
+    @staticmethod
+    def update_last_sent_date(user_id: int):
+        """Обновляет дату последней отправки карты дня"""
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE daily_card_subscriptions 
+                SET last_sent_date = ? 
+                WHERE user_id = ?
+            ''', (datetime.now().date(), user_id))
+            conn.commit()
+
+
+    @staticmethod
+    def can_offer_subscription_today(user_id: int) -> bool:
+        """Проверяет, можно ли предложить подписку сегодня (не предлагали ли уже)"""
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT last_offer_date FROM subscription_offers 
+                WHERE user_id = ?
+            ''', (user_id,))
+            row = cursor.fetchone()
+            
+            if not row or not row['last_offer_date']:
+                return True  # Никогда не предлагали
+            
+            last_offer = datetime.fromisoformat(row['last_offer_date'])
+            today = datetime.now().date()
+            
+            # Можно предлагать, если последнее предложение было не сегодня
+            return last_offer.date() < today
+
+    @staticmethod
+    def record_subscription_offer(user_id: int):
+        """Записывает факт предложения подписки сегодня"""
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO subscription_offers (user_id, last_offer_date, offer_count)
+                VALUES (?, ?, 1)
+                ON CONFLICT(user_id) DO UPDATE SET 
+                    last_offer_date = ?,
+                    offer_count = offer_count + 1
+            ''', (user_id, datetime.now(), datetime.now()))
+            conn.commit()

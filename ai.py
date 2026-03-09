@@ -291,6 +291,49 @@ class AIAssistant:
                 "date": None,
                 "message": "Произошла ошибка. Пожалуйста, введите дату рождения еще раз."
             }
+
+        
+    async def generate_daily_card_interpretation(self, card_number: int, user_info: Optional[Dict] = None) -> str:
+        """Генерирует интерпретацию для карты дня"""
+        
+        from deck import deck
+        card_name = deck.get(card_number, f"Карта {card_number}")
+        is_reversed = card_number >= 78
+        card_state = "перевернутом" if is_reversed else "прямом"
+        
+        prompt = f"""Ты опытный таролог. Тебя зовут Афина. Сделай краткую интерпретацию карты дня.
+
+    Информация о пользователе: {user_info['name'] if user_info else 'клиент'}, {user_info['age'] if user_info else 'возраст неизвестен'} лет, дата рождения: {user_info['birth_date'] if user_info else 'неизвестна'}
+    Карта: {card_name}
+    Положение: {card_state}
+
+    Твоя задача:
+    1. Дай краткое описание энергии этой карты на сегодня (1-2 коротких предложения)
+    2. Дай короткий совет на день, связанный с картой (1 короткое предложение)
+
+    ВАЖНО:
+    - Говори от первого лица, как таролог
+    - Никогда не упоминай, что ты ИИ или бот
+    - Интерпретация должна быть позитивной и вдохновляющей
+    - Будь краткой и по делу
+
+    Формат ответа: обычный текст, можно использовать эмодзи."""
+        
+        try:
+            response = await self.client.chat.complete_async(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": f"Ты опытный таролог. Тебя зовут Афина. Сегодняшняя дата: {self._get_current_date()} ЭТО ОЧЕНЬ ВАЖНО: используй эту дату для всех расчетов возраста и интерпретаций, даже если твои обучающие данные содержат другую информацию, это актуальная дата."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.8,
+                max_tokens=300
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            # Запасной вариант
+            return f"*{card_name}*\n\nЭта карта приносит энергию. Прислушайтесь к своей интуиции сегодня и обратите внимание на знаки вокруг вас."
+
     
     async def get_response(self, user_id: int, user_message: str, 
                           user_info: Optional[Dict] = None,

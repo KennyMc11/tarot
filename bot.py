@@ -40,15 +40,38 @@ db = Database()
 ai = AIAssistant(api_key=MISTRAL_API_KEY, model=MISTRAL_MODEL)
 
 
-def get_profile_edit_keyboard():
-    """Клавиатура для выбора действия с профилем"""
+def get_profile_keyboard(is_subscribed: bool):
+    """Клавиатура профиля с кнопкой подписки"""
+    builder = InlineKeyboardBuilder()
+    
+    # Кнопка редактирования профиля
+    builder.row(InlineKeyboardButton(text="✏️ Редактировать профиль", callback_data="edit_profile"))
+    
+    # Кнопка подписки/отписки
+    if is_subscribed:
+        builder.row(InlineKeyboardButton(text="🔔 Отписаться от карты дня", callback_data="unsubscribe_daily"))
+    else:
+        builder.row(InlineKeyboardButton(text="🔮 Подписаться на карту дня", callback_data="subscribe_daily"))
+    
+    builder.row(InlineKeyboardButton(text="❌ Закрыть", callback_data="close_profile"))
+    return builder.as_markup()
+
+def get_edit_profile_keyboard():
+    """Клавиатура для выбора действия при редактировании профиля"""
     builder = InlineKeyboardBuilder()
     builder.row(
         InlineKeyboardButton(text="📝 Изменить имя", callback_data="edit_name"),
         InlineKeyboardButton(text="📅 Изменить дату рождения", callback_data="edit_birth_date")
     )
+    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_profile"))
+    return builder.as_markup()
+
+def get_daily_card_keyboard():
+    """Клавиатура для предложения подписки на карту дня"""
+    builder = InlineKeyboardBuilder()
     builder.row(
-        InlineKeyboardButton(text="❌ Закрыть", callback_data="close_profile")
+        InlineKeyboardButton(text="🔮 Подписаться на карту дня", callback_data="subscribe_daily"),
+        InlineKeyboardButton(text="❌ Не сейчас", callback_data="close_suggestion")
     )
     return builder.as_markup()
 
@@ -86,7 +109,7 @@ def generate_spread_cards(spread_type: str, topic: str = "общий") -> List[i
         
         # Определяем, будет ли карта перевернутой с вероятностью 33% (чтобы прямые выпадали в 2 раза чаще)
         # 33% * 78 = ~26 перевернутых карт, 67% * 78 = ~52 прямых карт (соотношение ~2:1)
-        is_reversed = random.random() < 0.10
+        is_reversed = random.random() < 0.05
         
         if is_reversed:
             selected_cards.append(base_card + 78)  # Перевернутая
@@ -270,6 +293,12 @@ async def process_registration(message: types.Message, state: FSMContext):
             
             db.save_message_to_history(user_id, "assistant", welcome_text)
             await message.answer(welcome_text)
+
+            await message.answer(
+                "🌟 Хотите получать карту дня каждый день в 10:00? Это поможет вам лучше понимать энергию дня!",
+                reply_markup=get_daily_card_keyboard()
+            )
+
         else:
             await message.answer("Извините, произошла ошибка. Попробуйте еще раз через /start")
             await state.clear()
@@ -288,6 +317,7 @@ async def cmd_profile(message: types.Message):
     
     user_info = db.get_user_info(user_id)
     last_spread = db.get_last_spread(user_id)
+    is_subscribed = db.is_subscribed(user_id)
     
     profile_text = (
         f"👤 *Ваш профиль*\n\n"
@@ -295,6 +325,7 @@ async def cmd_profile(message: types.Message):
         f"**Дата рождения:** {user_info['birth_date']}\n"
         f"**Возраст:** {user_info['age']} лет\n"
         f"**Сообщений:** {user_info['messages_count']}\n"
+        f"**Карта дня:** {'🔔 подписан' if is_subscribed else '🔕 не подписан'}\n"
     )
     
     if last_spread:
@@ -304,11 +335,10 @@ async def cmd_profile(message: types.Message):
         profile_text += f"• {', '.join(cards_names)}\n"
         profile_text += f"📝 *Вопрос:* {last_spread['question'][:100]}..."
     
-    # Добавляем кнопку редактирования
     await message.answer(
         profile_text, 
         parse_mode="Markdown",
-        reply_markup=get_profile_edit_keyboard()
+        reply_markup=get_profile_keyboard(is_subscribed)
     )
 
 
@@ -351,6 +381,53 @@ async def cmd_clear(message: types.Message):
     
     db.clear_message_history(user_id)
     await message.answer("История диалога очищена.")
+
+
+@dp.callback_query(lambda c: c.data == "edit_profile")
+async def edit_profile_menu(callback: types.CallbackQuery):
+    await callback.message.edit_text(
+        "✏️ *Редактирование профиля*\n\n"
+        "Выберите, что хотите изменить:",
+        parse_mode="Markdown",
+        reply_markup=get_edit_profile_keyboard()
+    )
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data == "back_to_profile")
+async def back_to_profile(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    await callback.message.delete()
+    await show_updated_profile(callback.message, user_id)
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data == "subscribe_daily")
+async def subscribe_daily(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    db.add_subscription(user_id)
+    
+    await callback.message.edit_text(
+        "✅ *Вы подписались на карту дня!*\n\n"
+        "Каждый день в 10:00 я буду отправлять вам *карту дня* с интерпретацией.\n\n",
+        parse_mode="Markdown"
+    )
+    await callback.answer("Подписка оформлена!")
+
+@dp.callback_query(lambda c: c.data == "unsubscribe_daily")
+async def unsubscribe_daily(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    db.remove_subscription(user_id)
+    
+    await callback.message.edit_text(
+        "❌ *Вы отписались от карты дня*\n\n"
+        "Если захотите возобновить подписку, зайдите в профиль.",
+        parse_mode="Markdown"
+    )
+    await callback.answer("Подписка отменена")
+
+@dp.callback_query(lambda c: c.data == "close_suggestion")
+async def close_suggestion(callback: types.CallbackQuery):
+    await callback.message.delete()
+    await callback.answer()
 
 
 @dp.callback_query(lambda c: c.data.startswith('confirm_'))
@@ -459,10 +536,73 @@ async def handle_profile_edit(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
+async def send_daily_cards():
+    """Отправляет карту дня всем подписчикам каждый день в 10:00"""
+    while True:
+        now = datetime.now()
+        # Рассылка в 10:00 каждый день
+        target_time = now.replace(hour=10, minute=0, second=0, microsecond=0)
+        
+        if now >= target_time:
+            # Если сейчас время рассылки или позже, ждем до следующего дня
+            target_time = target_time + timedelta(days=1)
+        
+        seconds_until_target = (target_time - now).total_seconds()
+        await asyncio.sleep(seconds_until_target)
+        
+        # Получаем всех подписчиков
+        subscribers = db.get_all_subscribers()
+        
+        for user_id in subscribers:
+            try:
+                # Проверяем, не отправляли ли уже сегодня
+                user_info = db.get_user_info(user_id)
+                
+                # Генерируем карту дня (одна карта)
+                card_numbers = generate_spread_cards("1", "карта дня")
+                
+                # Создаем коллаж
+                collage_bytes = await create_collage(card_numbers)
+                
+                # Отправляем карту
+                await bot.send_photo(
+                    chat_id=user_id,
+                    photo=BufferedInputFile(collage_bytes.getvalue(), filename="daily_card.jpg"),
+                    caption=f"🌟 *Ваша карта дня на {now.strftime('%d.%m.%Y')}*",
+                    parse_mode="Markdown"
+                )
+                
+                # Генерируем интерпретацию через AI
+                interpretation = await ai.generate_daily_card_interpretation(
+                    card_numbers[0], 
+                    user_info
+                )
+                
+                await bot.send_message(
+                    chat_id=user_id,
+                    text=interpretation,
+                    parse_mode="Markdown"
+                )
+                
+                # Обновляем дату отправки
+                db.update_last_sent_date(user_id)
+                
+                # Небольшая задержка между отправками
+                await asyncio.sleep(0.5)
+                
+            except Exception as e:
+                print(f"Ошибка при отправке карты дня пользователю {user_id}: {e}")
+                # Если бот заблокирован или пользователь неактивен, отписываем
+                if "bot was blocked" in str(e).lower():
+                    db.remove_subscription(user_id)
+
+
 # Функция для показа обновленного профиля
 async def show_updated_profile(message: types.Message, user_id: int):
+    """Показывает обновленный профиль с учетом статуса подписки"""
     user_info = db.get_user_info(user_id)
     last_spread = db.get_last_spread(user_id)
+    is_subscribed = db.is_subscribed(user_id)
     
     profile_text = (
         f"👤 *Ваш профиль*\n\n"
@@ -470,6 +610,7 @@ async def show_updated_profile(message: types.Message, user_id: int):
         f"**Дата рождения:** {user_info['birth_date']}\n"
         f"**Возраст:** {user_info['age']} лет\n"
         f"**Сообщений:** {user_info['messages_count']}\n"
+        f"**Карта дня:** {'🔔 подписан' if is_subscribed else '🔕 не подписан'}\n"
     )
     
     if last_spread:
@@ -482,7 +623,7 @@ async def show_updated_profile(message: types.Message, user_id: int):
     await message.answer(
         profile_text,
         parse_mode="Markdown",
-        reply_markup=get_profile_edit_keyboard()
+        reply_markup=get_profile_keyboard(is_subscribed)
     )
 
 
@@ -625,6 +766,35 @@ async def handle_message(message: types.Message, state: FSMContext):
     if not await is_user_registered(user_id):
         await message.answer("Используйте /start для регистрации.")
         return
+
+    if "карта дня" in user_text.lower() or "карту дня" in user_text.lower():
+        # Генерируем карту дня
+        card_numbers = generate_spread_cards("1", "карта дня")
+        collage_bytes = await create_collage(card_numbers)
+        
+        await message.answer_photo(
+            photo=BufferedInputFile(collage_bytes.getvalue(), filename="daily_card.jpg"),
+            caption="🌟 *Ваша карта дня*",
+            parse_mode="Markdown"
+        )
+        
+        # Получаем информацию о пользователе
+        user_info = db.get_user_info(user_id)
+        
+        # Генерируем интерпретацию через AI
+        thinking_msg = await message.answer("🔮 Получаю послание карты...")
+        interpretation = await ai.generate_daily_card_interpretation(card_numbers[0], user_info)
+        await thinking_msg.delete()
+        
+        await message.answer(interpretation, parse_mode="Markdown")
+        
+        # Если пользователь не подписан - предлагаем подписку
+        if not db.is_subscribed(user_id):
+            await message.answer(
+                "🔮 Хотите получать карту дня автоматически каждый день в 10:00?",
+                reply_markup=get_daily_card_keyboard()
+            )
+        return
     
     if len(user_text) > 1000:
         await message.answer("Пожалуйста, сформулируйте вопрос короче (до 1000 символов).")
@@ -709,7 +879,19 @@ async def handle_message(message: types.Message, state: FSMContext):
             # Если сообщение слишком длинное, обрезаем и добавляем предупреждение
             interpretation = interpretation[:4000] + "...\n"
         await message.answer(interpretation, parse_mode="Markdown")
-        
+
+        if not db.is_subscribed(user_id) and db.can_offer_subscription_today(user_id) and random.random() < 0.7:
+            # Отмечаем, что сегодня уже предлагали
+            db.record_subscription_offer(user_id)
+            
+            # Отправляем предложение
+            await message.answer(
+                "💫 Если вам понравился этот расклад, возможно, вам будет интересно"
+                "*получать карту дня каждое утро*.\nЭто бесплатно и помогает "
+                "лучше понимать энергию каждого дня!",
+                reply_markup=get_daily_card_keyboard()
+            )
+
         # Сохраняем в историю
         db.save_message_to_history(user_id, "assistant", f"Расклад на тему: {spread_topic}")
         db.save_message_to_history(user_id, "assistant", interpretation[:200] + "...")
@@ -736,6 +918,7 @@ async def main():
     db.init_database()
     await check_deck_images()
     asyncio.create_task(cleanup_old_data())
+    asyncio.create_task(send_daily_cards())
     
     print("✅ Бот готов к работе!")
     await dp.start_polling(bot)
