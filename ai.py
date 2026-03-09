@@ -154,7 +154,6 @@ class AIAssistant:
     def _get_current_date(self) -> str:
         """Возвращает актуальную текущую дату"""
         current = datetime.now().strftime("%Y-%m-%d")
-        print(f"[DEBUG] Текущая дата в AI: {current}")  # Отладка
         return current
 
     async def process_registration(self, user_id: int, user_message: str, 
@@ -310,8 +309,6 @@ class AIAssistant:
             cards_names = last_spread.get('cards_names', [])
             personalized_prompt += f"\n\nПоследний расклад пользователя был на тему '{last_spread['spread_topic']}' с картами: {', '.join(cards_names)}"
             personalized_prompt += "\nНО ЭТО НЕ ЗНАЧИТ, ЧТО ТЕКУЩИЙ ЗАПРОС ТРЕБУЕТ РАСКЛАДА. Оценивай ТОЛЬКО текущее сообщение."
-
-        print(f"[DEBUG] System prompt date: {self._get_current_date()}")
         
         messages = [
             {"role": "system", "content": personalized_prompt},
