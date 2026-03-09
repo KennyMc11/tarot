@@ -5,26 +5,43 @@ from mistralai import Mistral
 
 # Системный промпт для регистрации
 REGISTRATION_SYSTEM_PROMPT = """Ты ассистент для регистрации пользователей в боте-тарологе. Тебя зовут Афина.
-Из сообщений пользователя нужно извлечь имя и возраст.
+Из сообщений пользователя нужно извлечь имя и дату рождения.
 
 Правила извлечения:
 - Имя может быть в любой форме
-- Возраст должен быть числом от 1 до 120
-- Если в сообщении есть и имя, и возраст - возвращай оба
-- Если есть только имя - возвращай имя, age = null
-- Если есть только возраст - возвращай возраст, name = null
+- Дата рождения должна быть в формате ГГГГ-ММ-ДД (например, 1990-05-15)
+- Если в сообщении есть и имя, и дата рождения - возвращай оба
+- Если есть только имя - возвращай имя, birth_date = null
+- Если есть только дата рождения - возвращай дату рождения, name = null
 - Если ничего не найдено - возвращай null для обоих полей
 
-ВАЖНО: Анализируй ВСЮ историю переписки с пользователем.
+ВАЖНО: 
+- Анализируй ВСЮ историю переписки с пользователем.
+- registration_complete = true ТОЛЬКО когда есть И имя И дата рождения
+- Если есть только имя или только дата, registration_complete = false
+- Всегда пиши дружелюбное message с просьбой дополнить недостающую информацию
 
 Отвечай строго в формате JSON:
 {
     "success": true/false,
     "name": "извлеченное имя или null",
-    "age": извлеченный возраст или null,
+    "birth_date": "извлеченная дата рождения в формате ГГГГ-ММ-ДД или null",
     "message": "сообщение для пользователя",
     "registration_complete": true/false
 }
+
+Примеры:
+1. Пользователь: "Меня зовут Анна"
+   {"success": true, "name": "Анна", "birth_date": null, "message": "Приятно познакомиться, Анна! А когда вы родились? (например, 1990-05-15)", "registration_complete": false}
+
+2. Пользователь: "15.05.1990"
+   {"success": true, "name": null, "birth_date": "1990-05-15", "message": "Спасибо! А как вас зовут?", "registration_complete": false}
+
+3. Пользователь: "Анна, 15.05.1990"
+   {"success": true, "name": "Анна", "birth_date": "1990-05-15", "message": "Спасибо за регистрацию!", "registration_complete": true}
+
+4. Пользователь: "Максим, 6 марта 1999"
+   {"success": true, "name": "Максим", "birth_date": "1999-03-06", "message": "Спасибо за регистрацию!", "registration_complete": true}
 """
 
 # УЛУЧШЕННЫЙ системный промпт для таролога
@@ -85,8 +102,8 @@ class AIAssistant:
         self.model = model
     
     async def process_registration(self, user_id: int, user_message: str, 
-                                   temp_data: Optional[Dict] = None, 
-                                   db_instance=None) -> Dict[str, Any]:
+                                temp_data: Optional[Dict] = None, 
+                                db_instance=None) -> Dict[str, Any]:
         """Обрабатывает регистрационные данные через AI"""
         
         registration_context = "История сообщений пользователя:\n"
@@ -100,8 +117,8 @@ class AIAssistant:
         if temp_data:
             if temp_data.get('name'):
                 registration_context += f"\n\nУже извлеченное имя: {temp_data['name']}"
-            if temp_data.get('age'):
-                registration_context += f"\nУже извлеченный возраст: {temp_data['age']}"
+            if temp_data.get('birth_date'):  # изменено с age
+                registration_context += f"\nУже извлеченная дата рождения: {temp_data['birth_date']}"
         
         try:
             response = await self.client.chat.complete_async(
@@ -122,7 +139,7 @@ class AIAssistant:
                 db_instance.save_temp_registration(
                     user_id, 
                     result.get('name'), 
-                    result.get('age'),
+                    result.get('birth_date'),  # изменено с age
                     user_message
                 )
             
@@ -131,7 +148,7 @@ class AIAssistant:
             return {
                 "success": False,
                 "name": None,
-                "age": None,
+                "birth_date": None,
                 "message": "Извините, произошла ошибка. Попробуйте еще раз.",
                 "registration_complete": False
             }
@@ -146,7 +163,7 @@ class AIAssistant:
         personalized_prompt = SYSTEM_PROMPT
         
         if user_info:
-            personalized_prompt += f"\n\nИнформация о пользователе: {user_info['name']}, {user_info['age']} лет"
+            personalized_prompt += f"\n\nИнформация о пользователе: {user_info['name']}, {user_info['age']} лет, дата рождения: {user_info['birth_date']}"
         
         if last_spread:
             # Добавляем информацию о последнем раскладе для контекста, но с предупреждением
@@ -236,7 +253,7 @@ class AIAssistant:
         # Промпт для интерпретации расклада
         interpretation_prompt = f"""Ты опытный таролог. Тебя зовут Афина. Сделай интерпретацию расклада.
 
-    Информация о пользователе: {user_info['name'] if user_info else 'клиент'}, {user_info['age'] if user_info else 'возраст неизвестен'} лет
+    Информация о пользователе: {user_info['name'] if user_info else 'клиент'}, {user_info['age'] if user_info else 'возраст неизвестен'} лет, дата рождения: {user_info['birth_date'] if user_info else 'неизвестна'}
     Тема расклада: {spread_topic}
     Название расклада: {spread_name}
     Вопрос пользователя: {user_question}

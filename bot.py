@@ -58,7 +58,7 @@ def generate_spread_cards(spread_type: str, topic: str = "общий") -> List[i
         
         # Определяем, будет ли карта перевернутой с вероятностью 33% (чтобы прямые выпадали в 2 раза чаще)
         # 33% * 78 = ~26 перевернутых карт, 67% * 78 = ~52 прямых карт (соотношение ~2:1)
-        is_reversed = random.random() < 0.33
+        is_reversed = random.random() < 0.10
         
         if is_reversed:
             selected_cards.append(base_card + 78)  # Перевернутая
@@ -191,7 +191,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
         await state.set_state(RegistrationStates.waiting_for_registration)
         await message.answer(
             "Добро пожаловать!\n\nМеня зовут Афина.\nЯ помогу вам с вопросами о картах Таро.\n\n"
-            "Для начала скажите, как вас зовут и сколько вам лет?\n",
+            "Для начала скажите, как вас зовут и вашу дату рождения?\n",
             parse_mode="Markdown"
         )
 
@@ -209,19 +209,23 @@ async def process_registration(message: types.Message, state: FSMContext):
     
     if ai_response.get("registration_complete"):
         name = ai_response.get("name")
-        age = ai_response.get("age")
+        birth_date = ai_response.get("birth_date")  # изменено с age
         
-        if name and age:
+        if name and birth_date:
             db.register_user(
                 user_id=user_id,
                 username=message.from_user.username,
                 first_name=message.from_user.first_name,
                 last_name=message.from_user.last_name,
                 name=name,
-                age=age
+                birth_date=birth_date  # изменено с age
             )
             
             await state.clear()
+            
+            # Получаем возраст для приветствия
+            user_info = db.get_user_info(user_id)
+            age = user_info['age'] if user_info else '?'
             
             welcome_text = (
                 f"Рада познакомиться, {name}! 🌟\n\n"

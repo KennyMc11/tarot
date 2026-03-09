@@ -35,6 +35,7 @@ class Database:
                     first_name TEXT,
                     last_name TEXT,
                     name TEXT,
+                    birth_date TEXT,
                     age INTEGER,
                     registration_date TIMESTAMP,
                     last_activity TIMESTAMP,
@@ -62,7 +63,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS registration_temp (
                     user_id INTEGER PRIMARY KEY,
                     name TEXT,
-                    age INTEGER,
+                    birth_date TEXT,
                     messages TEXT,
                     updated_at TIMESTAMP,
                     FOREIGN KEY (user_id) REFERENCES users (user_id)
@@ -86,17 +87,20 @@ class Database:
     
     @staticmethod
     def register_user(user_id: int, username: str, first_name: str, last_name: str, 
-                      name: str, age: int):
-        """Регистрация нового пользователя"""
+                    name: str, birth_date: str):  # вместо age: int
+        """Регистрация нового пользователя с датой рождения"""
+        # Вычисляем возраст из даты рождения
+        age = Database._calculate_age(birth_date)
+        
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT OR REPLACE INTO users 
-                (user_id, username, first_name, last_name, name, age, 
-                 registration_date, last_activity, messages_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (user_id, username, first_name, last_name, name, birth_date, age,
+                registration_date, last_activity, messages_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
-                user_id, username, first_name, last_name, name, age,
+                user_id, username, first_name, last_name, name, birth_date, age,
                 datetime.now(), datetime.now(), 0
             ))
             cursor.execute('DELETE FROM registration_temp WHERE user_id = ?', (user_id,))
@@ -125,7 +129,7 @@ class Database:
             return dict(row) if row else None
     
     @staticmethod
-    def save_temp_registration(user_id: int, name: Optional[str], age: Optional[int], message: str):
+    def save_temp_registration(user_id: int, name: Optional[str], birth_date: Optional[str], message: str):
         """Сохраняет временные данные регистрации"""
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -145,9 +149,9 @@ class Database:
             messages = messages[-5:]
             
             cursor.execute('''
-                INSERT OR REPLACE INTO registration_temp (user_id, name, age, messages, updated_at)
+                INSERT OR REPLACE INTO registration_temp (user_id, name, birth_date, messages, updated_at)
                 VALUES (?, ?, ?, ?, ?)
-            ''', (user_id, name, age, json.dumps(messages), datetime.now()))
+            ''', (user_id, name, birth_date, json.dumps(messages), datetime.now()))
             conn.commit()
     
     @staticmethod
@@ -259,3 +263,37 @@ class Database:
             conn.commit()
         
         print(f"🔄 Очистка данных старше {days} дней выполнена")
+
+    @staticmethod
+    def change_name(user_id: int, new_name: str):
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('UPDATE users SET name = ? WHERE user_id = ?', (new_name, user_id))
+            conn.commit()
+        print(f'Имя пользователя user_id: {user_id} изменено на: {new_name}')
+
+
+    @staticmethod
+    def change_birth_date(user_id: int, new_birth_date: str):
+        """Изменяет дату рождения пользователя и пересчитывает возраст"""
+        age = Database._calculate_age(new_birth_date)
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('UPDATE users SET birth_date = ?, age = ? WHERE user_id = ?', 
+                        (new_birth_date, age, user_id))
+            conn.commit()
+        print(f'Дата рождения пользователя user_id: {user_id} изменена на: {new_birth_date}')
+
+    @staticmethod
+    def _calculate_age(birth_date_str: str) -> int:
+        """Вычисляет возраст из даты рождения"""
+        try:
+            birth_date = datetime.strptime(birth_date_str, "%Y-%m-%d").date()
+            today = datetime.now().date()
+            age = today.year - birth_date.year
+            # Проверяем, был ли уже день рождения в этом году
+            if today.month < birth_date.month or (today.month == birth_date.month and today.day < birth_date.day):
+                age -= 1
+            return age
+        except:
+            return 0
