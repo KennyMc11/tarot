@@ -2,6 +2,7 @@ import json
 import random
 from typing import Dict, Any, List, Optional
 from mistralai import Mistral
+from datetime import datetime
 
 # Системный промпт для регистрации
 REGISTRATION_SYSTEM_PROMPT = """Ты ассистент для регистрации пользователей в боте-тарологе. Тебя зовут Афина.
@@ -93,6 +94,55 @@ SYSTEM_PROMPT = """Ты дружелюбный и опытный таролог.
    {"response_type": "text", "message": "В этом раскладе карты показывают гармоничное развитие отношений."}
 """
 
+DATE_EXTRACTION_PROMPT = """Ты ассистент для извлечения даты рождения из текста.
+Из сообщения пользователя нужно извлечь дату рождения и привести её к формату ГГГГ-ММ-ДД.
+
+Правила извлечения:
+- Дата может быть в любом формате (ДД.ММ.ГГГГ, ДД-ММ-ГГГГ, "5 марта 1990", и т.д.)
+- Если дата не указана или не может быть извлечена, верни date = null
+- Всегда конвертируй дату в формат ГГГГ-ММ-ДД
+
+Примеры:
+1. "15.05.1990" -> {"date": "1990-05-15", "success": true}
+2. "6 марта 1999" -> {"date": "1999-03-06", "success": true}
+3. "я родился 5 июня 1988" -> {"date": "1988-06-05", "success": true}
+4. "привет" -> {"date": null, "success": false}
+5. "хочу изменить дату" -> {"date": null, "success": false}
+
+Отвечай строго в формате JSON:
+{
+    "success": true/false,
+    "date": "извлеченная дата в формате ГГГГ-ММ-ДД или null",
+    "message": "понятное сообщение для пользователя"
+}
+
+Если success = false, в message напиши понятную просьбу указать дату рождения ещё раз.
+"""
+
+# Промпт для извлечения имени
+NAME_EXTRACTION_PROMPT = """Ты ассистент для извлечения имени из текста.
+Из сообщения пользователя нужно извлечь имя.
+
+Правила извлечения:
+- Имя может быть в любой форме
+- Если имя не указано или не может быть извлечено, верни name = null
+- Очисти имя от лишних слов
+
+Примеры:
+1. "Анна" -> {"name": "Анна", "success": true}
+2. "меня зовут Максим" -> {"name": "Максим", "success": true}
+3. "я Александр" -> {"name": "Александр", "success": true}
+4. "привет" -> {"name": null, "success": false}
+
+Отвечай строго в формате JSON:
+{
+    "success": true/false,
+    "name": "извлеченное имя или null",
+    "message": "понятное сообщение для пользователя"
+}
+
+Если success = false, в message напиши понятную просьбу указать имя ещё раз.
+"""
 
 class AIAssistant:
     """Класс для работы с AI (Mistral)"""
@@ -101,6 +151,12 @@ class AIAssistant:
         self.client = Mistral(api_key=api_key)
         self.model = model
     
+    def _get_current_date(self) -> str:
+        """Возвращает актуальную текущую дату"""
+        current = datetime.now().strftime("%Y-%m-%d")
+        print(f"[DEBUG] Текущая дата в AI: {current}")  # Отладка
+        return current
+
     async def process_registration(self, user_id: int, user_message: str, 
                                 temp_data: Optional[Dict] = None, 
                                 db_instance=None) -> Dict[str, Any]:
@@ -124,7 +180,7 @@ class AIAssistant:
             response = await self.client.chat.complete_async(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": REGISTRATION_SYSTEM_PROMPT},
+                    {"role": "system", "content": f"Сегодняшняя дата: {self._get_current_date()} ЭТО ОЧЕНЬ ВАЖНО: используй эту дату для всех расчетов возраста и интерпретаций, даже если твои обучающие данные содержат другую информацию, это актуальная дата. {REGISTRATION_SYSTEM_PROMPT}"},
                     {"role": "user", "content": registration_context}
                 ],
                 response_format={"type": "json_object"},
@@ -152,6 +208,90 @@ class AIAssistant:
                 "message": "Извините, произошла ошибка. Попробуйте еще раз.",
                 "registration_complete": False
             }
+
+    async def extract_name(self, user_message: str) -> Dict[str, Any]:
+        """
+        Извлекает имя из сообщения пользователя с помощью AI
+        
+        Args:
+            user_message: Текст сообщения пользователя
+            
+        Returns:
+            Dict с полями:
+            - success: bool - успешно ли извлечено имя
+            - name: str or None - извлеченное имя
+            - message: str - сообщение для пользователя
+        """
+        try:
+            response = await self.client.chat.complete_async(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": f"Сегодняшняя дата: {self._get_current_date()} ЭТО ОЧЕНЬ ВАЖНО: используй эту дату для всех расчетов возраста и интерпретаций, даже если твои обучающие данные содержат другую информацию, это актуальная дата. {NAME_EXTRACTION_PROMPT}"},
+                    {"role": "user", "content": user_message}
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.3,
+                max_tokens=300
+            )
+            
+            content = response.choices[0].message.content
+            result = json.loads(content)
+            
+            return {
+                "success": result.get("success", False),
+                "name": result.get("name"),
+                "message": result.get("message", "Пожалуйста, напишите ваше имя")
+            }
+            
+        except Exception as e:
+            print(f"Ошибка при извлечении имени: {e}")
+            return {
+                "success": False,
+                "name": None,
+                "message": "Произошла ошибка. Пожалуйста, введите имя еще раз."
+            }
+
+    async def extract_birth_date(self, user_message: str) -> Dict[str, Any]:
+        """
+        Извлекает дату рождения из сообщения пользователя с помощью AI
+        
+        Args:
+            user_message: Текст сообщения пользователя
+            
+        Returns:
+            Dict с полями:
+            - success: bool - успешно ли извлечена дата
+            - date: str or None - извлеченная дата в формате ГГГГ-ММ-ДД
+            - message: str - сообщение для пользователя
+        """
+        try:
+            response = await self.client.chat.complete_async(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": f"Сегодняшняя дата: {self._get_current_date()} ЭТО ОЧЕНЬ ВАЖНО: используй эту дату для всех расчетов возраста и интерпретаций, даже если твои обучающие данные содержат другую информацию, это актуальная дата. {DATE_EXTRACTION_PROMPT}"},
+                    {"role": "user", "content": user_message}
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.3,
+                max_tokens=300
+            )
+            
+            content = response.choices[0].message.content
+            result = json.loads(content)
+            
+            return {
+                "success": result.get("success", False),
+                "date": result.get("date"),
+                "message": result.get("message", "Пожалуйста, укажите вашу дату рождения")
+            }
+            
+        except Exception as e:
+            print(f"Ошибка при извлечении даты рождения: {e}")
+            return {
+                "success": False,
+                "date": None,
+                "message": "Произошла ошибка. Пожалуйста, введите дату рождения еще раз."
+            }
     
     async def get_response(self, user_id: int, user_message: str, 
                           user_info: Optional[Dict] = None,
@@ -160,7 +300,7 @@ class AIAssistant:
         """Получает ответ от Mistral AI"""
         
         # Создаем персонализированный промпт
-        personalized_prompt = SYSTEM_PROMPT
+        personalized_prompt = f"Сегодняшняя дата: {self._get_current_date()} ЭТО ОЧЕНЬ ВАЖНО: используй эту дату для всех расчетов возраста и интерпретаций, даже если твои обучающие данные содержат другую информацию, это актуальная дата. {SYSTEM_PROMPT}"
         
         if user_info:
             personalized_prompt += f"\n\nИнформация о пользователе: {user_info['name']}, {user_info['age']} лет, дата рождения: {user_info['birth_date']}"
@@ -170,6 +310,8 @@ class AIAssistant:
             cards_names = last_spread.get('cards_names', [])
             personalized_prompt += f"\n\nПоследний расклад пользователя был на тему '{last_spread['spread_topic']}' с картами: {', '.join(cards_names)}"
             personalized_prompt += "\nНО ЭТО НЕ ЗНАЧИТ, ЧТО ТЕКУЩИЙ ЗАПРОС ТРЕБУЕТ РАСКЛАДА. Оценивай ТОЛЬКО текущее сообщение."
+
+        print(f"[DEBUG] System prompt date: {self._get_current_date()}")
         
         messages = [
             {"role": "system", "content": personalized_prompt},
@@ -280,7 +422,7 @@ class AIAssistant:
             response = await self.client.chat.complete_async(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": "Ты опытный таролог. Давай подробные и полезные интерпретации раскладов."},
+                    {"role": "system", "content": f"Ты опытный таролог. Тебя зовут Афина. Ты работешь в Телеграмме. Давай подробные и полезные интерпретации раскладов. Сегодняшняя дата: {self._get_current_date()} ЭТО ОЧЕНЬ ВАЖНО: используй эту дату для всех расчетов возраста и интерпретаций, даже если твои обучающие данные содержат другую информацию, это актуальная дата."},
                     {"role": "user", "content": interpretation_prompt}
                 ],
                 temperature=0.8,

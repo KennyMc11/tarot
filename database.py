@@ -276,6 +276,12 @@ class Database:
     @staticmethod
     def change_birth_date(user_id: int, new_birth_date: str):
         """Изменяет дату рождения пользователя и пересчитывает возраст"""
+        # Проверяем, что дата корректна
+        try:
+            datetime.strptime(new_birth_date, "%Y-%m-%d")
+        except ValueError:
+            raise ValueError("Неверный формат даты")
+        
         age = Database._calculate_age(new_birth_date)
         with get_db_connection() as conn:
             cursor = conn.cursor()

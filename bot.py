@@ -4,6 +4,7 @@ import random
 from io import BytesIO
 from datetime import datetime, timedelta
 from typing import List
+import json
 
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
@@ -12,11 +13,15 @@ from aiogram.types import BufferedInputFile
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from PIL import Image, ImageDraw, ImageFont
 
 from deck import deck
 from database import Database
 from ai import AIAssistant
+
+
 
 load_dotenv()
 
@@ -35,8 +40,31 @@ db = Database()
 ai = AIAssistant(api_key=MISTRAL_API_KEY, model=MISTRAL_MODEL)
 
 
+def get_profile_edit_keyboard():
+    """Клавиатура для выбора действия с профилем"""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="📝 Изменить имя", callback_data="edit_name"),
+        InlineKeyboardButton(text="📅 Изменить дату рождения", callback_data="edit_birth_date")
+    )
+    builder.row(
+        InlineKeyboardButton(text="❌ Закрыть", callback_data="close_profile")
+    )
+    return builder.as_markup()
+
+def get_confirmation_keyboard(action: str):
+    """Клавиатура для подтверждения действий"""
+    builder = InlineKeyboardBuilder()
+    confirm_data = f"confirm_{action}"
+    print(f"Создание кнопки с callback_data: {confirm_data}")  # Отладка
+    builder.row(
+        InlineKeyboardButton(text="✅ Подтвердить", callback_data=confirm_data),
+        InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_edit")
+    )
+    return builder.as_markup()
+
+
 def generate_spread_cards(spread_type: str, topic: str = "общий") -> List[int]:
-    """Генерирует случайные уникальные карты для расклада с учетом вероятности перевернутых карт"""
     
     # Определяем количество карт
     card_counts = {
@@ -89,6 +117,11 @@ def generate_positions(spread_type: str, num_cards: int) -> List[str]:
 # Определяем состояния для FSM
 class RegistrationStates(StatesGroup):
     waiting_for_registration = State()
+
+class EditProfileStates(StatesGroup):
+    waiting_for_edit_choice = State()
+    waiting_for_new_name = State()
+    waiting_for_new_birth_date = State()
 
 
 # Функция для проверки регистрации
@@ -190,8 +223,10 @@ async def cmd_start(message: types.Message, state: FSMContext):
         db.clear_temp_registration(user_id)
         await state.set_state(RegistrationStates.waiting_for_registration)
         await message.answer(
-            "Добро пожаловать!\n\nМеня зовут Афина.\nЯ помогу вам с вопросами о картах Таро.\n\n"
-            "Для начала скажите, как вас зовут и вашу дату рождения?\n",
+            "✨Добро пожаловать!✨\n\n"
+            "Меня зовут Афина, и я ваш проводник в мир Таро.🃏\n\n"
+            "Чтобы настроиться на вашу энергию и сделать точный расклад, мне нужно знать ваше *имя* и *дату рождения*.\n"
+            "Напишите их, пожалуйста.\n",
             parse_mode="Markdown"
         )
 
@@ -255,16 +290,26 @@ async def cmd_profile(message: types.Message):
     last_spread = db.get_last_spread(user_id)
     
     profile_text = (
-        f"👤 {user_info['name']}, {user_info['age']} лет\n"
-        f"📊 Сообщений: {user_info['messages_count']}\n"
+        f"👤 *Ваш профиль*\n\n"
+        f"**Имя:** {user_info['name']}\n"
+        f"**Дата рождения:** {user_info['birth_date']}\n"
+        f"**Возраст:** {user_info['age']} лет\n"
+        f"**Сообщений:** {user_info['messages_count']}\n"
     )
     
     if last_spread:
         cards_names = [deck.get(card, f"Карта {card}")[:20] for card in last_spread['cards']]
-        profile_text += f"🔮 Последний расклад: {last_spread['spread_name']} ({', '.join(cards_names)})\n"
-        profile_text += f"📝 Вопрос: {last_spread['question'][:100]}..."
+        profile_text += f"\n🔮 *Последний расклад:*\n"
+        profile_text += f"• {last_spread['spread_name']}\n"
+        profile_text += f"• {', '.join(cards_names)}\n"
+        profile_text += f"📝 *Вопрос:* {last_spread['question'][:100]}..."
     
-    await message.answer(profile_text)
+    # Добавляем кнопку редактирования
+    await message.answer(
+        profile_text, 
+        parse_mode="Markdown",
+        reply_markup=get_profile_edit_keyboard()
+    )
 
 
 # Обработчик команды /help
@@ -306,6 +351,266 @@ async def cmd_clear(message: types.Message):
     
     db.clear_message_history(user_id)
     await message.answer("История диалога очищена.")
+
+
+@dp.callback_query(lambda c: c.data.startswith('confirm_'))
+async def confirm_edit(callback: types.CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    action = callback.data.replace('confirm_', '')
+    
+    data = await state.get_data()
+    
+    if action == "name":
+        new_name = data.get('new_name')
+        if new_name:
+            # Изменяем имя в БД
+            db.change_name(user_id, new_name)
+            
+            await callback.message.edit_text(
+                f"✅ Имя успешно изменено на **{new_name}**!",
+                parse_mode="Markdown"
+            )
+            
+            # Логируем действие
+            print(f"Пользователь {user_id} изменил имя на {new_name}")
+    
+    elif action == "birth_date":
+        new_birth_date = data.get('new_birth_date')
+        if new_birth_date:
+            # Изменяем дату рождения в БД
+            db.change_birth_date(user_id, new_birth_date)
+            
+            age = db._calculate_age(new_birth_date)
+            
+            await callback.message.edit_text(
+                f"✅ Дата рождения успешно изменена на **{new_birth_date}**!\n"
+                f"Новый возраст: **{age}** лет",
+                parse_mode="Markdown"
+            )
+            
+            # Логируем действие
+            print(f"Пользователь {user_id} изменил дату рождения на {new_birth_date}")
+    
+    # Очищаем состояние
+    await state.clear()
+    
+    # Показываем обновленный профиль
+    await callback.message.answer(
+        "🔄 *Обновленный профиль*",
+        parse_mode="Markdown"
+    )
+    await show_updated_profile(callback.message, user_id)
+    
+    await callback.answer()
+
+
+@dp.callback_query(lambda c: c.data == 'cancel_edit')
+async def cancel_edit(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text(
+        "❌ Редактирование отменено."
+    )
+    # Показываем обновленный профиль
+    await show_updated_profile(callback.message, callback.from_user.id)
+    await callback.answer()
+
+
+@dp.callback_query()
+async def handle_profile_edit(callback: types.CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    action = callback.data
+    
+    if action == "edit_name":
+        await state.set_state(EditProfileStates.waiting_for_new_name)
+        await callback.message.edit_text(
+            "📝 *Изменение имени*\n\n"
+            "Напишите новое имя:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_edit")]]
+            )
+        )
+    
+    elif action == "edit_birth_date":
+        await state.set_state(EditProfileStates.waiting_for_new_birth_date)
+        await callback.message.edit_text(
+            "📅 *Изменение даты рождения*\n\n"
+            "Напишите новую дату рождения в формате **ГГГГ-ММ-ДД**\n"
+            "Например: 1990-05-15",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_edit")]]
+            )
+        )
+    
+    elif action == "close_profile":
+        await callback.message.delete()
+        await callback.answer("Профиль закрыт")
+    
+    elif action == "cancel_edit":
+        await state.clear()
+        await callback.message.edit_text(
+            "❌ Редактирование отменено.",
+            reply_markup=None
+        )
+        # Показываем обновленный профиль
+        await show_updated_profile(callback.message, user_id)
+    
+    await callback.answer()
+
+
+# Функция для показа обновленного профиля
+async def show_updated_profile(message: types.Message, user_id: int):
+    user_info = db.get_user_info(user_id)
+    last_spread = db.get_last_spread(user_id)
+    
+    profile_text = (
+        f"👤 *Ваш профиль*\n\n"
+        f"**Имя:** {user_info['name']}\n"
+        f"**Дата рождения:** {user_info['birth_date']}\n"
+        f"**Возраст:** {user_info['age']} лет\n"
+        f"**Сообщений:** {user_info['messages_count']}\n"
+    )
+    
+    if last_spread:
+        cards_names = [deck.get(card, f"Карта {card}")[:20] for card in last_spread['cards']]
+        profile_text += f"\n🔮 *Последний расклад:*\n"
+        profile_text += f"• {last_spread['spread_name']}\n"
+        profile_text += f"• {', '.join(cards_names)}\n"
+        profile_text += f"📝 *Вопрос:* {last_spread['question'][:100]}..."
+    
+    await message.answer(
+        profile_text,
+        parse_mode="Markdown",
+        reply_markup=get_profile_edit_keyboard()
+    )
+
+
+@dp.message(EditProfileStates.waiting_for_new_name)
+async def process_new_name(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    user_text = message.text.strip()
+    
+    # Показываем индикатор печатания
+    await bot.send_chat_action(chat_id=user_id, action="typing")
+    
+    # Используем AI для извлечения имени
+    result = await ai.extract_name(user_text)
+
+    print(f"Результат AI: {result}")  # Отладка
+    
+    if result.get("success") and result.get("name"):
+        new_name = result["name"]
+        
+        # Проверяем длину имени
+        if len(new_name) < 2 or len(new_name) > 50:
+            await message.answer(
+                "❌ Имя должно быть от 2 до 50 символов. Попробуйте еще раз:",
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_edit")]]
+                )
+            )
+            return
+        
+        # Сохраняем имя в состоянии для подтверждения
+        await state.update_data(new_name=new_name)
+        
+        await message.answer(
+            f"📝 *Подтверждение*\n\n"
+            f"Новое имя: **{new_name}**\n\n"
+            f"Всё верно?",
+            parse_mode="Markdown",
+            reply_markup=get_confirmation_keyboard("name")
+        )
+    else:
+        # AI не смог извлечь имя
+        ai_message = result.get("message", "Пожалуйста, напишите ваше имя")
+        await message.answer(
+            f"❌ {ai_message}",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_edit")]]
+            )
+        )
+
+
+@dp.message(EditProfileStates.waiting_for_new_birth_date)
+async def process_new_birth_date(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    user_text = message.text.strip()
+    
+    # Показываем индикатор печатания
+    await bot.send_chat_action(chat_id=user_id, action="typing")
+    
+    # Используем AI для извлечения даты рождения
+    result = await ai.extract_birth_date(user_text)
+
+    print(f"Результат AI: {result}")  # Отладка
+    
+    if result.get("success") and result.get("date"):
+        new_birth_date = result["date"]
+        
+        # Проверяем дату
+        try:
+            from datetime import datetime
+            birth_date_obj = datetime.strptime(new_birth_date, "%Y-%m-%d").date()
+            
+            # Проверяем, что дата не в будущем
+            if birth_date_obj > datetime.now().date():
+                await message.answer(
+                    "❌ Дата рождения не может быть в будущем. Попробуйте еще раз:",
+                    reply_markup=InlineKeyboardMarkup(
+                        inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_edit")]]
+                    )
+                )
+                return
+            
+            # Проверяем возраст
+            age = db._calculate_age(new_birth_date)
+            if age < 13:
+                await message.answer(
+                    "❌ Вам должно быть не менее 13 лет. Попробуйте еще раз:",
+                    reply_markup=InlineKeyboardMarkup(
+                        inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_edit")]]
+                    )
+                )
+                return
+            if age > 120:
+                await message.answer(
+                    "❌ Пожалуйста, введите корректную дату рождения.",
+                    reply_markup=InlineKeyboardMarkup(
+                        inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_edit")]]
+                    )
+                )
+                return
+            
+            # Сохраняем дату в состоянии для подтверждения
+            await state.update_data(new_birth_date=new_birth_date)
+            
+            await message.answer(
+                f"📅 *Подтверждение*\n\n"
+                f"Я определила дату: **{new_birth_date}**\n"
+                f"Возраст: **{age}** лет\n\n"
+                f"Всё верно?",
+                parse_mode="Markdown",
+                reply_markup=get_confirmation_keyboard("birth_date")
+            )
+            
+        except ValueError as e:
+            await message.answer(
+                "❌ Произошла ошибка при обработке даты. Попробуйте еще раз:",
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_edit")]]
+                )
+            )
+    else:
+        # AI не смог извлечь дату
+        ai_message = result.get("message", "Пожалуйста, укажите вашу дату рождения")
+        await message.answer(
+            f"❌ {ai_message}",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_edit")]]
+            )
+        )
 
 
 # Основной обработчик сообщений
@@ -402,7 +707,7 @@ async def handle_message(message: types.Message, state: FSMContext):
         # Отправляем интерпретацию с проверкой длины
         if len(interpretation) > 4000:
             # Если сообщение слишком длинное, обрезаем и добавляем предупреждение
-            interpretation = interpretation[:4000] + "...\n\n*Интерпретация сокращена из-за ограничений Telegram*"
+            interpretation = interpretation[:4000] + "...\n"
         await message.answer(interpretation, parse_mode="Markdown")
         
         # Сохраняем в историю
@@ -413,7 +718,7 @@ async def handle_message(message: types.Message, state: FSMContext):
         # Обычный текстовый ответ
         answer = response_data.get("message", "Я внимательно изучила ваш вопрос.")
         if len(answer) > 4000:
-            answer = answer[:4000] + "...\n\n*Сообщение сокращено из-за ограничений Telegram*"
+            answer = answer[:4000] + "...\n"
         await message.answer(answer, parse_mode="Markdown")
         db.save_message_to_history(user_id, "assistant", answer[:200])
 
