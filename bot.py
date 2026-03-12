@@ -2,7 +2,7 @@ import os
 import asyncio
 import random
 from io import BytesIO
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List
 import json
 
@@ -22,6 +22,11 @@ from database import Database
 from ai import AIAssistant
 
 
+
+# Функция для получения актуальной даты
+def get_current_date():
+    """Возвращает актуальную текущую дату в UTC"""
+    return datetime.now(timezone.utc).date()
 
 load_dotenv()
 
@@ -109,7 +114,7 @@ def generate_spread_cards(spread_type: str, topic: str = "общий") -> List[i
         
         # Определяем, будет ли карта перевернутой с вероятностью 33% (чтобы прямые выпадали в 2 раза чаще)
         # 33% * 78 = ~26 перевернутых карт, 67% * 78 = ~52 прямых карт (соотношение ~2:1)
-        is_reversed = random.random() < 0.05
+        is_reversed = random.random() < 0.03
         
         if is_reversed:
             selected_cards.append(base_card + 78)  # Перевернутая
@@ -295,7 +300,7 @@ async def process_registration(message: types.Message, state: FSMContext):
             await message.answer(welcome_text)
 
             await message.answer(
-                "🌟 Хотите получать карту дня каждый день в 10:00? Это поможет вам лучше понимать энергию дня!",
+                "🌟 Хотите получать карту дня каждое утро? Это поможет вам лучше понимать энергию дня!",
                 reply_markup=get_daily_card_keyboard()
             )
 
@@ -407,7 +412,7 @@ async def subscribe_daily(callback: types.CallbackQuery):
     
     await callback.message.edit_text(
         "✅ *Вы подписались на карту дня!*\n\n"
-        "Каждый день в 10:00 я буду отправлять вам *карту дня* с интерпретацией.\n\n",
+        "Каждое утро я буду отправлять вам *карту дня* с интерпретацией.\n\n",
         parse_mode="Markdown"
     )
     await callback.answer("Подписка оформлена!")
@@ -537,18 +542,26 @@ async def handle_profile_edit(callback: types.CallbackQuery, state: FSMContext):
 
 
 async def send_daily_cards():
-    """Отправляет карту дня всем подписчикам каждый день в 10:00"""
+    """Отправляет карту дня всем подписчикам каждый день в UTC"""
     while True:
-        now = datetime.now()
-        # Рассылка в 10:00 каждый день
-        target_time = now.replace(hour=10, minute=0, second=0, microsecond=0)
+        # Получаем текущее время для расчета
+        now = datetime.now(timezone.utc)
         
+        # Целевое время сегодня в UTC
+        target_time = now.replace(hour=4, minute=0, second=0, microsecond=0)
+        
+        # Если уже прошло сегодня, переносим на завтра
         if now >= target_time:
-            # Если сейчас время рассылки или позже, ждем до следующего дня
             target_time = target_time + timedelta(days=1)
         
-        seconds_until_target = (target_time - now).total_seconds()
-        await asyncio.sleep(seconds_until_target)
+        # Ждем до целевого времени
+        wait_seconds = (target_time - now).total_seconds()
+        print(f"🕐 Следующая рассылка через {wait_seconds/3600:.1f} часов (в {target_time} UTC)")
+        await asyncio.sleep(wait_seconds)
+        
+        # ПОЛУЧАЕМ АКТУАЛЬНУЮ ДАТУ ЧЕРЕЗ ФУНКЦИЮ!
+        today = get_current_date()
+        print(f"📅 Отправка карты дня на {today.strftime('%d.%m.%Y')}")
         
         # Получаем всех подписчиков
         subscribers = db.get_all_subscribers()
@@ -564,11 +577,11 @@ async def send_daily_cards():
                 # Создаем коллаж
                 collage_bytes = await create_collage(card_numbers)
                 
-                # Отправляем карту
+                # Отправляем карту с ПРАВИЛЬНОЙ датой
                 await bot.send_photo(
                     chat_id=user_id,
                     photo=BufferedInputFile(collage_bytes.getvalue(), filename="daily_card.jpg"),
-                    caption=f"🌟 *Ваша карта дня на {now.strftime('%d.%m.%Y')}*",
+                    caption=f"🌟 *Ваша карта дня на сегодня!*",
                     parse_mode="Markdown"
                 )
                 
@@ -591,10 +604,11 @@ async def send_daily_cards():
                 await asyncio.sleep(0.5)
                 
             except Exception as e:
-                print(f"Ошибка при отправке карты дня пользователю {user_id}: {e}")
+                print(f"❌ Ошибка при отправке карты дня пользователю {user_id}: {e}")
                 # Если бот заблокирован или пользователь неактивен, отписываем
                 if "bot was blocked" in str(e).lower():
                     db.remove_subscription(user_id)
+                    print(f"🚫 Пользователь {user_id} отписан (бот заблокирован)")
 
 
 # Функция для показа обновленного профиля
@@ -768,13 +782,16 @@ async def handle_message(message: types.Message, state: FSMContext):
         return
 
     if "карта дня" in user_text.lower() or "карту дня" in user_text.lower():
+        # Получаем актуальную дату
+        today = get_current_date()
+        
         # Генерируем карту дня
         card_numbers = generate_spread_cards("1", "карта дня")
         collage_bytes = await create_collage(card_numbers)
         
         await message.answer_photo(
             photo=BufferedInputFile(collage_bytes.getvalue(), filename="daily_card.jpg"),
-            caption="🌟 *Ваша карта дня*",
+            caption=f"🌟 *Ваша карта дня на сегодня!*",
             parse_mode="Markdown"
         )
         
@@ -791,7 +808,7 @@ async def handle_message(message: types.Message, state: FSMContext):
         # Если пользователь не подписан - предлагаем подписку
         if not db.is_subscribed(user_id):
             await message.answer(
-                "🔮 Хотите получать карту дня автоматически каждый день в 10:00?",
+                "🔮 Хотите получать карту дня автоматически каждое утро?",
                 reply_markup=get_daily_card_keyboard()
             )
         return

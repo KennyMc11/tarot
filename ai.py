@@ -2,7 +2,7 @@ import json
 import random
 from typing import Dict, Any, List, Optional
 from mistralai import Mistral
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 # Системный промпт для регистрации
 REGISTRATION_SYSTEM_PROMPT = """Ты ассистент для регистрации пользователей в боте-тарологе. Тебя зовут Афина.
@@ -152,8 +152,8 @@ class AIAssistant:
         self.model = model
     
     def _get_current_date(self) -> str:
-        """Возвращает актуальную текущую дату"""
-        current = datetime.now().strftime("%Y-%m-%d")
+        """Возвращает актуальную текущую дату для Москвы (UTC+3)"""
+        current = (datetime.now(timezone.utc) + timedelta(hours=3)).strftime("%Y-%m-%d")
         return current
 
     async def process_registration(self, user_id: int, user_message: str, 
