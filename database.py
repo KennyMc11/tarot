@@ -1,25 +1,52 @@
-import sqlite3
+# database.py
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from psycopg2.pool import ThreadedConnectionPool
 import json
 from datetime import datetime, timedelta
 from contextlib import contextmanager
 from typing import List, Dict, Optional, Any
+import os
+from dotenv import load_dotenv
 
-DATABASE_PATH = "tarot_bot.db"
+load_dotenv()
+
+# Конфигурация PostgreSQL
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+# Пул подключений
+try:
+    pool = ThreadedConnectionPool(
+        minconn=1,
+        maxconn=10,
+        dsn=DATABASE_URL
+    )
+    print("✅ Пул подключений к PostgreSQL создан")
+except Exception as e:
+    print(f"❌ Ошибка создания пула подключений: {e}")
+    pool = None
 
 
 @contextmanager
 def get_db_connection():
     """Контекстный менеджер для подключения к БД"""
-    conn = sqlite3.connect(DATABASE_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = None
     try:
+        if pool:
+            conn = pool.getconn()
+        else:
+            conn = psycopg2.connect(DATABASE_URL)
         yield conn
     finally:
-        conn.close()
+        if conn:
+            if pool:
+                pool.putconn(conn)
+            else:
+                conn.close()
 
 
 class Database:
-    """Класс для работы с базой данных"""
+    """Класс для работы с базой данных PostgreSQL"""
     
     @staticmethod
     def init_database():
@@ -30,7 +57,7 @@ class Database:
             # Таблица пользователей
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS users (
-                    user_id INTEGER PRIMARY KEY,
+                    user_id BIGINT PRIMARY KEY,
                     username TEXT,
                     first_name TEXT,
                     last_name TEXT,
@@ -46,68 +73,70 @@ class Database:
             # Таблица для последнего расклада
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS last_spread (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
                     question TEXT,
                     cards TEXT,
                     positions TEXT,
                     spread_name TEXT,
                     spread_topic TEXT,
-                    created_at TIMESTAMP,
-                    FOREIGN KEY (user_id) REFERENCES users (user_id)
+                    created_at TIMESTAMP
                 )
             ''')
             
             # Таблица для временного хранения регистрационных данных
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS registration_temp (
-                    user_id INTEGER PRIMARY KEY,
+                    user_id BIGINT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
                     name TEXT,
                     birth_date TEXT,
                     messages TEXT,
-                    updated_at TIMESTAMP,
-                    FOREIGN KEY (user_id) REFERENCES users (user_id)
+                    updated_at TIMESTAMP
                 )
             ''')
             
             # Таблица для истории сообщений (последние 20)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS message_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
                     role TEXT,
                     content TEXT,
-                    created_at TIMESTAMP,
-                    FOREIGN KEY (user_id) REFERENCES users (user_id)
-                )
-            ''')
-
-            # Таблица для подписок на карту дня
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS daily_card_subscriptions (
-                    user_id INTEGER PRIMARY KEY,
-                    subscribed_at TIMESTAMP,
-                    last_sent_date DATE,
-                    FOREIGN KEY (user_id) REFERENCES users (user_id)
-                )
-            ''')
-
-            # Таблица для отслеживания предложений подписки
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS subscription_offers (
-                    user_id INTEGER PRIMARY KEY,
-                    last_offer_date TIMESTAMP,
-                    offer_count INTEGER DEFAULT 0,
-                    FOREIGN KEY (user_id) REFERENCES users (user_id)
+                    created_at TIMESTAMP
                 )
             ''')
             
+            # Таблица для подписок на карту дня
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS daily_card_subscriptions (
+                    user_id BIGINT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+                    subscribed_at TIMESTAMP,
+                    last_sent_date DATE
+                )
+            ''')
+            
+            # Таблица для отслеживания предложений подписки
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS subscription_offers (
+                    user_id BIGINT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+                    last_offer_date TIMESTAMP,
+                    offer_count INTEGER DEFAULT 0
+                )
+            ''')
+            
+            # Создаем индексы для оптимизации
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_last_spread_user_id ON last_spread(user_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_last_spread_created_at ON last_spread(created_at)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_message_history_user_id ON message_history(user_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_message_history_created_at ON message_history(created_at)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_registration_temp_user_id ON registration_temp(user_id)')
+            
             conn.commit()
-            print("✅ База данных инициализирована")
+            print("✅ База данных PostgreSQL инициализирована")
     
     @staticmethod
     def register_user(user_id: int, username: str, first_name: str, last_name: str, 
-                    name: str, birth_date: str):  # вместо age: int
+                    name: str, birth_date: str):
         """Регистрация нового пользователя с датой рождения"""
         # Вычисляем возраст из даты рождения
         age = Database._calculate_age(birth_date)
@@ -115,15 +144,23 @@ class Database:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT OR REPLACE INTO users 
+                INSERT INTO users 
                 (user_id, username, first_name, last_name, name, birth_date, age,
                 registration_date, last_activity, messages_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (user_id) DO UPDATE SET
+                    username = EXCLUDED.username,
+                    first_name = EXCLUDED.first_name,
+                    last_name = EXCLUDED.last_name,
+                    name = EXCLUDED.name,
+                    birth_date = EXCLUDED.birth_date,
+                    age = EXCLUDED.age,
+                    last_activity = EXCLUDED.last_activity
             ''', (
                 user_id, username, first_name, last_name, name, birth_date, age,
                 datetime.now(), datetime.now(), 0
             ))
-            cursor.execute('DELETE FROM registration_temp WHERE user_id = ?', (user_id,))
+            cursor.execute('DELETE FROM registration_temp WHERE user_id = %s', (user_id,))
             conn.commit()
     
     @staticmethod
@@ -133,9 +170,9 @@ class Database:
             cursor = conn.cursor()
             cursor.execute('''
                 UPDATE users 
-                SET last_activity = ?, 
+                SET last_activity = %s, 
                     messages_count = messages_count + 1
-                WHERE user_id = ?
+                WHERE user_id = %s
             ''', (datetime.now(), user_id))
             conn.commit()
     
@@ -143,8 +180,8 @@ class Database:
     def get_user_info(user_id: int) -> Optional[Dict]:
         """Получает информацию о пользователе"""
         with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute('SELECT * FROM users WHERE user_id = %s', (user_id,))
             row = cursor.fetchone()
             return dict(row) if row else None
     
@@ -152,9 +189,9 @@ class Database:
     def save_temp_registration(user_id: int, name: Optional[str], birth_date: Optional[str], message: str):
         """Сохраняет временные данные регистрации"""
         with get_db_connection() as conn:
-            cursor = conn.cursor()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
             
-            cursor.execute('SELECT messages FROM registration_temp WHERE user_id = ?', (user_id,))
+            cursor.execute('SELECT messages FROM registration_temp WHERE user_id = %s', (user_id,))
             row = cursor.fetchone()
             
             messages = []
@@ -169,8 +206,13 @@ class Database:
             messages = messages[-5:]
             
             cursor.execute('''
-                INSERT OR REPLACE INTO registration_temp (user_id, name, birth_date, messages, updated_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO registration_temp (user_id, name, birth_date, messages, updated_at)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (user_id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    birth_date = EXCLUDED.birth_date,
+                    messages = EXCLUDED.messages,
+                    updated_at = EXCLUDED.updated_at
             ''', (user_id, name, birth_date, json.dumps(messages), datetime.now()))
             conn.commit()
     
@@ -178,8 +220,8 @@ class Database:
     def get_temp_registration(user_id: int) -> Optional[Dict]:
         """Получает временные данные регистрации"""
         with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT * FROM registration_temp WHERE user_id = ?', (user_id,))
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute('SELECT * FROM registration_temp WHERE user_id = %s', (user_id,))
             row = cursor.fetchone()
             return dict(row) if row else None
     
@@ -188,7 +230,7 @@ class Database:
         """Очищает временные данные регистрации"""
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute('DELETE FROM registration_temp WHERE user_id = ?', (user_id,))
+            cursor.execute('DELETE FROM registration_temp WHERE user_id = %s', (user_id,))
             conn.commit()
     
     @staticmethod
@@ -200,7 +242,7 @@ class Database:
             cursor.execute('''
                 INSERT INTO last_spread 
                 (user_id, question, cards, positions, spread_name, spread_topic, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
             ''', (
                 user_id, question[:200], json.dumps(cards), 
                 json.dumps(positions), spread_name, spread_topic, datetime.now()
@@ -211,10 +253,10 @@ class Database:
     def get_last_spread(user_id: int) -> Optional[Dict]:
         """Получает последний расклад пользователя"""
         with get_db_connection() as conn:
-            cursor = conn.cursor()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
             cursor.execute('''
                 SELECT * FROM last_spread 
-                WHERE user_id = ? 
+                WHERE user_id = %s 
                 ORDER BY created_at DESC 
                 LIMIT 1
             ''', (user_id,))
@@ -233,15 +275,15 @@ class Database:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO message_history (user_id, role, content, created_at)
-                VALUES (?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s)
             ''', (user_id, role, content, datetime.now()))
             
             # Оставляем только последние 20 сообщений
             cursor.execute('''
                 DELETE FROM message_history 
-                WHERE user_id = ? AND id NOT IN (
+                WHERE user_id = %s AND id NOT IN (
                     SELECT id FROM message_history 
-                    WHERE user_id = ? 
+                    WHERE user_id = %s 
                     ORDER BY created_at DESC 
                     LIMIT 20
                 )
@@ -253,10 +295,10 @@ class Database:
     def get_message_history(user_id: int) -> List[Dict]:
         """Получает историю сообщений пользователя"""
         with get_db_connection() as conn:
-            cursor = conn.cursor()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
             cursor.execute('''
                 SELECT role, content FROM message_history 
-                WHERE user_id = ? 
+                WHERE user_id = %s 
                 ORDER BY created_at ASC
             ''', (user_id,))
             rows = cursor.fetchall()
@@ -267,7 +309,7 @@ class Database:
         """Очищает историю сообщений пользователя"""
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute('DELETE FROM message_history WHERE user_id = ?', (user_id,))
+            cursor.execute('DELETE FROM message_history WHERE user_id = %s', (user_id,))
             conn.commit()
     
     @staticmethod
@@ -277,9 +319,9 @@ class Database:
         
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute('DELETE FROM message_history WHERE created_at < ?', (threshold,))
-            cursor.execute('DELETE FROM last_spread WHERE created_at < ?', (threshold,))
-            cursor.execute('DELETE FROM registration_temp WHERE updated_at < ?', (threshold,))
+            cursor.execute('DELETE FROM message_history WHERE created_at < %s', (threshold,))
+            cursor.execute('DELETE FROM last_spread WHERE created_at < %s', (threshold,))
+            cursor.execute('DELETE FROM registration_temp WHERE updated_at < %s', (threshold,))
             conn.commit()
         
         print(f"🔄 Очистка данных старше {days} дней выполнена")
@@ -288,10 +330,9 @@ class Database:
     def change_name(user_id: int, new_name: str):
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute('UPDATE users SET name = ? WHERE user_id = ?', (new_name, user_id))
+            cursor.execute('UPDATE users SET name = %s WHERE user_id = %s', (new_name, user_id))
             conn.commit()
         print(f'Имя пользователя user_id: {user_id} изменено на: {new_name}')
-
 
     @staticmethod
     def change_birth_date(user_id: int, new_birth_date: str):
@@ -305,7 +346,7 @@ class Database:
         age = Database._calculate_age(new_birth_date)
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute('UPDATE users SET birth_date = ?, age = ? WHERE user_id = ?', 
+            cursor.execute('UPDATE users SET birth_date = %s, age = %s WHERE user_id = %s', 
                         (new_birth_date, age, user_id))
             conn.commit()
         print(f'Дата рождения пользователя user_id: {user_id} изменена на: {new_birth_date}')
@@ -330,8 +371,11 @@ class Database:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT OR REPLACE INTO daily_card_subscriptions (user_id, subscribed_at, last_sent_date)
-                VALUES (?, ?, ?)
+                INSERT INTO daily_card_subscriptions (user_id, subscribed_at, last_sent_date)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (user_id) DO UPDATE SET
+                    subscribed_at = EXCLUDED.subscribed_at,
+                    last_sent_date = EXCLUDED.last_sent_date
             ''', (user_id, datetime.now(), None))
             conn.commit()
 
@@ -340,7 +384,7 @@ class Database:
         """Удаляет подписку на карту дня"""
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute('DELETE FROM daily_card_subscriptions WHERE user_id = ?', (user_id,))
+            cursor.execute('DELETE FROM daily_card_subscriptions WHERE user_id = %s', (user_id,))
             conn.commit()
 
     @staticmethod
@@ -348,7 +392,7 @@ class Database:
         """Проверяет, подписан ли пользователь"""
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute('SELECT 1 FROM daily_card_subscriptions WHERE user_id = ?', (user_id,))
+            cursor.execute('SELECT 1 FROM daily_card_subscriptions WHERE user_id = %s', (user_id,))
             return cursor.fetchone() is not None
 
     @staticmethod
@@ -357,7 +401,7 @@ class Database:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT user_id FROM daily_card_subscriptions')
-            return [row['user_id'] for row in cursor.fetchall()]
+            return [row[0] for row in cursor.fetchall()]
 
     @staticmethod
     def update_last_sent_date(user_id: int):
@@ -366,11 +410,10 @@ class Database:
             cursor = conn.cursor()
             cursor.execute('''
                 UPDATE daily_card_subscriptions 
-                SET last_sent_date = ? 
-                WHERE user_id = ?
+                SET last_sent_date = %s 
+                WHERE user_id = %s
             ''', (datetime.now().date(), user_id))
             conn.commit()
-
 
     @staticmethod
     def can_offer_subscription_today(user_id: int) -> bool:
@@ -379,17 +422,16 @@ class Database:
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT last_offer_date FROM subscription_offers 
-                WHERE user_id = ?
+                WHERE user_id = %s
             ''', (user_id,))
             row = cursor.fetchone()
             
-            if not row or not row['last_offer_date']:
-                return True  # Никогда не предлагали
+            if not row or not row[0]:
+                return True
             
-            last_offer = datetime.fromisoformat(row['last_offer_date'])
+            last_offer = row[0] if isinstance(row[0], datetime) else datetime.fromisoformat(row[0])
             today = datetime.now().date()
             
-            # Можно предлагать, если последнее предложение было не сегодня
             return last_offer.date() < today
 
     @staticmethod
@@ -399,9 +441,9 @@ class Database:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO subscription_offers (user_id, last_offer_date, offer_count)
-                VALUES (?, ?, 1)
-                ON CONFLICT(user_id) DO UPDATE SET 
-                    last_offer_date = ?,
-                    offer_count = offer_count + 1
-            ''', (user_id, datetime.now(), datetime.now()))
+                VALUES (%s, %s, 1)
+                ON CONFLICT (user_id) DO UPDATE SET 
+                    last_offer_date = EXCLUDED.last_offer_date,
+                    offer_count = subscription_offers.offer_count + 1
+            ''', (user_id, datetime.now()))
             conn.commit()

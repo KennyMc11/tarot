@@ -5,3 +5,4 @@ Pillow
 python-dotenv
 APScheduler
 aiofiles
+psycopg2-binary
