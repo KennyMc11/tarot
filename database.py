@@ -18,7 +18,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 try:
     pool = ThreadedConnectionPool(
         minconn=1,
-        maxconn=10,
+        maxconn=50,
         dsn=DATABASE_URL
     )
     print("✅ Пул подключений к PostgreSQL создан")
