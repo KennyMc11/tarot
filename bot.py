@@ -609,7 +609,7 @@ async def send_daily_cards():
                 await bot.send_photo(
                     chat_id=user_id,
                     photo=BufferedInputFile(collage_bytes.getvalue(), filename="daily_card.jpg"),
-                    caption=f"🌟 *Ваша карта дня на сегодня!*",
+                    caption=f"🌟 *Карта дня на сегодня!*",
                     parse_mode="Markdown"
                 )
                 
