@@ -268,7 +268,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
 async def cmd_keystats(message: types.Message):
     """Показывает статистику использования API ключей (только для админа)"""
     # Добавьте проверку на админа
-    if message.from_user.id != YOUR_ADMIN_ID:  # Замените на свой ID
+    if message.from_user.id != int(YOUR_ADMIN_ID):  # Замените на свой ID
         return
     
     if hasattr(ai, 'key_pool') and ai.key_pool:
