@@ -33,7 +33,13 @@ load_dotenv()
 # Конфигурация
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
+MISTRAL_API_KEYS = os.getenv("MISTRAL_API_KEYS", "").split(",")
+MISTRAL_API_KEYS = [key.strip() for key in MISTRAL_API_KEYS if key.strip()]
 MISTRAL_MODEL = "mistral-large-latest"
+YOUR_ADMIN_ID = os.getenv("YOUR_ADMIN_ID")
+
+if not MISTRAL_API_KEYS and MISTRAL_API_KEY:
+    MISTRAL_API_KEYS = [MISTRAL_API_KEY]
 
 # Инициализация
 bot = Bot(token=BOT_TOKEN)
@@ -42,7 +48,7 @@ dp = Dispatcher(storage=storage)
 
 # Инициализация компонентов
 db = Database()
-ai = AIAssistant(api_key=MISTRAL_API_KEY, model=MISTRAL_MODEL)
+ai = AIAssistant(api_keys=MISTRAL_API_KEYS, model=MISTRAL_MODEL)
 
 
 def get_profile_keyboard(is_subscribed: bool):
@@ -258,6 +264,28 @@ async def cmd_start(message: types.Message, state: FSMContext):
             parse_mode="Markdown"
         )
 
+@dp.message(Command("keystats"))
+async def cmd_keystats(message: types.Message):
+    """Показывает статистику использования API ключей (только для админа)"""
+    # Добавьте проверку на админа
+    if message.from_user.id != YOUR_ADMIN_ID:  # Замените на свой ID
+        return
+    
+    if hasattr(ai, 'key_pool') and ai.key_pool:
+        stats = ai.key_pool.get_stats()
+        stats_text = f"📊 *Статистика API ключей*\n\n"
+        stats_text += f"Всего ключей: {stats['total_keys']}\n"
+        stats_text += f"Активных: {stats['active_keys']}\n"
+        stats_text += f"Всего запросов: {stats['total_requests']}\n"
+        stats_text += f"Ошибок: {stats['total_fails']}\n\n"
+        stats_text += "*Детали:*\n"
+        for k in stats['keys']:
+            status = "✅" if k['is_active'] else "❌"
+            stats_text += f"{status} {k['key']}: {k['requests']} запр., {k['fails']} ошиб.\n"
+        
+        await message.answer(stats_text, parse_mode="Markdown")
+    else:
+        await message.answer("Пул ключей не используется")
 
 # Обработчик регистрации
 @dp.message(RegistrationStates.waiting_for_registration)

@@ -3,6 +3,8 @@ import random
 from typing import Dict, Any, List, Optional
 from mistralai import Mistral
 from datetime import datetime, timezone, timedelta
+from api_key_pool import APIKeyPool
+import asyncio
 
 # Системный промпт для регистрации
 REGISTRATION_SYSTEM_PROMPT = """Ты ассистент для регистрации пользователей в боте-тарологе. Тебя зовут Афина.
@@ -147,14 +149,75 @@ NAME_EXTRACTION_PROMPT = """Ты ассистент для извлечения 
 class AIAssistant:
     """Класс для работы с AI (Mistral)"""
     
-    def __init__(self, api_key: str, model: str = "mistral-large-latest"):
-        self.client = Mistral(api_key=api_key)
+    def __init__(self, api_key: str = None, model: str = "mistral-large-latest", api_keys: List[str] = None):
+        # Поддержка как одного ключа, так и пула
+        if api_keys:
+            self.key_pool = APIKeyPool(api_keys)
+            self.use_pool = True
+            # Инициализируем клиент с первым ключом (будет заменяться при каждом запросе)
+            first_key = api_keys[0] if api_keys else api_key
+            self.client = Mistral(api_key=first_key)
+        else:
+            self.key_pool = None
+            self.use_pool = False
+            self.client = Mistral(api_key=api_key)
+        
         self.model = model
+        self._current_client_key = None
     
     def _get_current_date(self) -> str:
         """Возвращает актуальную текущую дату для Москвы (UTC+3)"""
         current = (datetime.now(timezone.utc) + timedelta(hours=3)).strftime("%Y-%m-%d")
         return current
+
+
+    async def _get_client_with_key(self, api_key: str):
+        """Создает клиент Mistral с указанным ключом"""
+        return Mistral(api_key=api_key)
+
+    async def _execute_with_key(self, func, *args, **kwargs):
+        """Выполняет запрос с балансировкой ключей"""
+        if not self.use_pool:
+            # Если пул не используется, работаем как раньше
+            return await func(*args, **kwargs)
+        
+        max_retries = len(self.key_pool.keys)
+        for attempt in range(max_retries):
+            api_key = self.key_pool.get_random_key()
+            if not api_key:
+                raise Exception("Нет доступных API ключей")
+            
+            try:
+                # Создаем временный клиент с этим ключом
+                temp_client = await self._get_client_with_key(api_key)
+                # Временно заменяем client
+                original_client = self.client
+                self.client = temp_client
+                
+                # Выполняем запрос
+                result = await func(*args, **kwargs)
+                
+                # Успех - сообщаем в пул
+                self.key_pool.report_success(api_key)
+                self.client = original_client
+                return result
+                
+            except Exception as e:
+                # Ошибка - сообщаем в пул
+                self.key_pool.report_failure(api_key)
+                print(f"⚠️ Ошибка с ключом {api_key[:10]}...: {e}")
+                
+                # Восстанавливаем оригинальный клиент
+                if 'original_client' in locals():
+                    self.client = original_client
+                
+                if attempt == max_retries - 1:
+                    raise e
+                
+                await asyncio.sleep(0.5 * (attempt + 1))  # Экспоненциальная задержка
+        
+        raise Exception("Все ключи API не работают")
+
 
     async def process_registration(self, user_id: int, user_message: str, 
                                 temp_data: Optional[Dict] = None, 
@@ -176,7 +239,8 @@ class AIAssistant:
                 registration_context += f"\nУже извлеченная дата рождения: {temp_data['birth_date']}"
         
         try:
-            response = await self.client.chat.complete_async(
+            response = await self._execute_with_key(
+                self.client.chat.complete_async,
                 model=self.model,
                 messages=[
                     {"role": "system", "content": f"Сегодняшняя дата: {self._get_current_date()} ЭТО ОЧЕНЬ ВАЖНО: используй эту дату для всех расчетов возраста и интерпретаций, даже если твои обучающие данные содержат другую информацию, это актуальная дата. {REGISTRATION_SYSTEM_PROMPT}"},
@@ -222,7 +286,8 @@ class AIAssistant:
             - message: str - сообщение для пользователя
         """
         try:
-            response = await self.client.chat.complete_async(
+            response = await self._execute_with_key(
+                self.client.chat.complete_async,
                 model=self.model,
                 messages=[
                     {"role": "system", "content": f"Сегодняшняя дата: {self._get_current_date()} ЭТО ОЧЕНЬ ВАЖНО: используй эту дату для всех расчетов возраста и интерпретаций, даже если твои обучающие данные содержат другую информацию, это актуальная дата. {NAME_EXTRACTION_PROMPT}"},
@@ -264,7 +329,8 @@ class AIAssistant:
             - message: str - сообщение для пользователя
         """
         try:
-            response = await self.client.chat.complete_async(
+            response = await self._execute_with_key(
+                self.client.chat.complete_async,
                 model=self.model,
                 messages=[
                     {"role": "system", "content": f"Сегодняшняя дата: {self._get_current_date()} ЭТО ОЧЕНЬ ВАЖНО: используй эту дату для всех расчетов возраста и интерпретаций, даже если твои обучающие данные содержат другую информацию, это актуальная дата. {DATE_EXTRACTION_PROMPT}"},
@@ -320,7 +386,8 @@ class AIAssistant:
     Формат ответа: обычный текст, можно использовать эмодзи."""
         
         try:
-            response = await self.client.chat.complete_async(
+            response = await self._execute_with_key(
+                self.client.chat.complete_async,
                 model=self.model,
                 messages=[
                     {"role": "system", "content": f"Ты опытный таролог. Тебя зовут Афина. Сегодняшняя дата: {self._get_current_date()} ЭТО ОЧЕНЬ ВАЖНО: используй эту дату для всех расчетов возраста и интерпретаций, даже если твои обучающие данные содержат другую информацию, это актуальная дата."},
@@ -378,7 +445,8 @@ class AIAssistant:
         })
         
         try:
-            response = await self.client.chat.complete_async(
+            response = await self._execute_with_key(
+                self.client.chat.complete_async,
                 model=self.model,
                 messages=messages,
                 response_format={"type": "json_object"},
@@ -459,7 +527,8 @@ class AIAssistant:
     Формат ответа: обычный текст, можно использовать эмодзи и форматирование Markdown. Не используй "#" для заголовков, они не работают в телеграмм."""
 
         try:
-            response = await self.client.chat.complete_async(
+            response = await self._execute_with_key(
+                self.client.chat.complete_async,
                 model=self.model,
                 messages=[
                     {"role": "system", "content": f"Ты опытный таролог. Тебя зовут Афина. Ты работешь в Телеграмме. Давай подробные и полезные интерпретации раскладов. Сегодняшняя дата: {self._get_current_date()} ЭТО ОЧЕНЬ ВАЖНО: используй эту дату для всех расчетов возраста и интерпретаций, даже если твои обучающие данные содержат другую информацию, это актуальная дата."},
