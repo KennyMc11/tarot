@@ -287,6 +287,63 @@ async def cmd_keystats(message: types.Message):
     else:
         await message.answer("Пул ключей не используется")
 
+
+@dp.message(Command("send"))
+async def cmd_send_to_user(message: types.Message):
+    """
+    Отправляет сообщение пользователю от имени бота.
+    Использование: /send user_id текст сообщения
+    Только для администратора
+    """
+    # Проверяем, является ли пользователь админом
+    admin_id = int(YOUR_ADMIN_ID)
+    if message.from_user.id != int(admin_id):
+        await message.answer("⛔ У вас нет прав для выполнения этой команды.")
+        return
+    
+    # Парсим команду
+    args = message.text.split(maxsplit=2)
+    
+    if len(args) < 3:
+        await message.answer(
+            "❌ *Неверный формат команды*\n\n"
+            "Использование: `/send user_id текст сообщения`\n\n"
+            "Пример: `/send 123456789 Привет! Это тестовое сообщение`",
+            parse_mode="Markdown"
+        )
+        return
+    
+    try:
+        target_user_id = int(args[1])
+        text_to_send = args[2]
+    except ValueError:
+        await message.answer("❌ Неверный формат user_id. Используйте числовой ID.")
+        return
+    
+    # Отправляем сообщение пользователю
+    try:
+        await bot.send_message(
+            chat_id=target_user_id,
+            text=f"{text_to_send}",
+            parse_mode="Markdown"
+        )
+        
+        # Логируем успешную отправку
+        print(f"✅ Сообщение отправлено пользователю {target_user_id}: {text_to_send[:100]}")
+        
+        await message.answer(
+            f"✅ *Сообщение успешно отправлено*\n\n"
+            f"**Пользователь:** `{target_user_id}`\n"
+            f"**Текст:** {text_to_send[:200]}{'...' if len(text_to_send) > 200 else ''}",
+            parse_mode="Markdown"
+        )
+        
+    except Exception as e:
+        error_msg = f"❌ *Ошибка при отправке сообщения*\n\n{str(e)}"
+        await message.answer(error_msg, parse_mode="Markdown")
+        print(f"❌ Ошибка отправки сообщения пользователю {target_user_id}: {e}")
+
+
 # Обработчик регистрации
 @dp.message(RegistrationStates.waiting_for_registration)
 async def process_registration(message: types.Message, state: FSMContext):
